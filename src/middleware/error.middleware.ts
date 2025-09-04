@@ -5,10 +5,8 @@ interface Error {
   code: number;
   statusCode?: number;
   message: string | string[];
-  errors: [];
+  errors: Error[];
 }
-
-// let message: string | string[];
 
 const errorMiddleware = (
   err: Error,

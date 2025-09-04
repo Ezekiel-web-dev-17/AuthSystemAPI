@@ -5,6 +5,7 @@ interface UserModel extends Document {
   lastname: string;
   email: string;
   password: string;
+  isEmailVerified: boolean; // new field to track email verification status
 }
 
 const userModel = new Schema<UserModel>(
@@ -36,6 +37,7 @@ const userModel = new Schema<UserModel>(
       required: [true, "User Password is required"],
       minLength: 6,
     },
+    isEmailVerified: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
