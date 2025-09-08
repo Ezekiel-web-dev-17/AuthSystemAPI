@@ -6,6 +6,7 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import {
   FORGOT_PASSWORD_URL,
+  JWT_REFRESH_SECRET,
   JWT_SECRET,
   MAIL_HOST,
   MAIL_PORT,
@@ -16,7 +17,6 @@ import {
 import { emailTemplate } from "../helper/emailTemplate.js";
 import { EmailVerification } from "../models/verified.model.js";
 import { forgotPasswordTemplate } from "../helper/fogotPassword.js";
-import { error } from "console";
 
 interface UserInfo {
   firstname: string;
@@ -316,18 +316,21 @@ export const logIn = async (
       }
     }
 
-    const token = jwt.sign(
-      { userId: user.id } as JwtPayload,
-      JWT_SECRET as Secret,
-      {
-        expiresIn: "7d",
-      }
+    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET as Secret, {
+      expiresIn: "15m",
+    });
+
+    const refreshToken = jwt.sign(
+      { userId: user.id },
+      JWT_REFRESH_SECRET as Secret,
+      { expiresIn: "5d" }
     );
 
     return res.status(200).json({
       success: true,
       message: "Logged in successfully",
-      token,
+      accessToken,
+      refreshToken,
     });
   } catch (error) {
     next(error);
@@ -443,5 +446,78 @@ export const resetPassword = async (
     });
   } catch (error) {
     next(error);
+  }
+};
+export const refreshToken = async (
+  req: Request<{}, {}, { token: string }>,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: "The refresh token is required.",
+      });
+    }
+
+    // ✅ Verify signature and payload
+    const decoded = jwt.verify(
+      token,
+      JWT_REFRESH_SECRET as Secret
+    ) as jwt.JwtPayload & { userId: string };
+
+    const { userId, exp } = decoded;
+    if (!userId || !exp) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid refresh token." });
+    }
+
+    // ✅ Check expiration properly (seconds vs ms)
+    if (exp < Math.floor(Date.now() / 1000)) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Refresh token has expired." });
+    }
+
+    // ✅ Validate user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found!" });
+    }
+
+    if (!user.isEmailVerified) {
+      return res
+        .status(403)
+        .json({ success: false, message: "User email not verified!" });
+    }
+
+    // ✅ Issue new access token
+    const accessToken = jwt.sign(
+      { userId: user.id },
+      JWT_SECRET as Secret,
+      { expiresIn: "15m" } // short lifespan for access token
+    );
+
+    // (Optional) Issue a new refresh token too:
+    const newRefreshToken = jwt.sign(
+      { userId: user.id },
+      JWT_REFRESH_SECRET as Secret,
+      { expiresIn: "7d" }
+    );
+
+    return res.status(200).json({
+      success: true,
+      accessToken,
+      refreshToken: newRefreshToken, // if rotating tokens
+    });
+  } catch (error) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Invalid or expired refresh token." });
   }
 };
