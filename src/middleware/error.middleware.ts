@@ -1,54 +1,54 @@
 import { NextFunction, Request, Response } from "express";
+import mongoose from "mongoose";
 
-interface Error {
-  name: string;
-  code: number;
+interface AppError extends Error {
+  code?: number;
   statusCode?: number;
-  message: string | string[];
-  errors: Error[];
+  errors?: any;
 }
 
 const errorMiddleware = (
-  err: Error,
-  req: Request,
+  err: AppError,
+  _req: Request,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ) => {
-  try {
-    let error: Error = { ...err };
+  let error = { ...err };
 
-    error.message = err.message;
+  error.message = err.message || "Something went wrong";
 
-    console.error(err);
-
-    // Mongoose bad objectId
-    if (err.name === "CastError") {
-      const message = "Resource not found";
-      if (!error) error = {} as Error;
-      error.message = message;
-      error.statusCode = 404;
-    }
-
-    // Mongoose duplicate key
-    if (err.code === 11000) {
-      const message = "Duplicate field value entered";
-      error.message = message;
-      err.statusCode = 400;
-    }
-
-    // Mongoose Validation Error
-    if (err.name === "ValidationError") {
-      const message = Object.values(err.errors).map((val) => val.message);
-      error.message = message.join(", ");
-      error.statusCode = 400;
-    }
-
-    res
-      .status(error.statusCode || 500)
-      .json({ success: false, error: error.message || "Server error." });
-  } catch (error) {
-    next(error);
+  // Mongoose bad ObjectId
+  if (err.name === "CastError") {
+    error.message = "Resource not found";
+    error.statusCode = 404;
   }
+
+  // Mongoose duplicate key
+  if (err.code === 11000) {
+    error.message = "Duplicate field value entered";
+    error.statusCode = 400;
+  }
+
+  // Mongoose validation error
+  if (err.name === "ValidationError") {
+    error.message = Object.values(
+      (err as mongoose.Error.ValidationError).errors
+    )
+      .map((val: any) => val.message)
+      .join(", ");
+    error.statusCode = 400;
+  }
+
+  // Log (only stack in dev)
+  if (process.env.NODE_ENV !== "production") {
+    console.error("🔥 Error:", err);
+  }
+
+  res.status(error.statusCode || 500).json({
+    success: false,
+    message: error.message,
+    ...(process.env.NODE_ENV !== "production" && { stack: err.stack }),
+  });
 };
 
 export default errorMiddleware;

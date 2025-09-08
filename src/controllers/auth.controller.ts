@@ -1,19 +1,22 @@
 import { NextFunction, Request, Response } from "express";
 import { User } from "../models/user.model.js";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import jwt, { Secret } from "jsonwebtoken";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import {
-  BASE_URL,
+  FORGOT_PASSWORD_URL,
   JWT_SECRET,
   MAIL_HOST,
   MAIL_PORT,
   MAIL_USER,
   NODE_ENV,
+  VERIFY_EMAIL_URL,
 } from "../config/app.config.js";
 import { emailTemplate } from "../helper/emailTemplate.js";
 import { EmailVerification } from "../models/verified.model.js";
+import { forgotPasswordTemplate } from "../helper/fogotPassword.js";
+import { error } from "console";
 
 interface UserInfo {
   firstname: string;
@@ -43,9 +46,7 @@ interface TransportOptions {
 
 // build a user-specific verify URL (example)
 function buildVerifyUrl(baseUrl: string, token: string, userId: string) {
-  return `${baseUrl}/api/v1/verify-email?token=${encodeURIComponent(
-    token
-  )}&userId=${userId}`;
+  return `${baseUrl}?token=${encodeURIComponent(token)}&userId=${userId}`;
 }
 
 const EMAIL_HTML_TEMPLATE = emailTemplate;
@@ -60,6 +61,21 @@ function renderVerifyEmailHtml(params: {
   return EMAIL_HTML_TEMPLATE.replaceAll("{{FIRST_NAME}}", firstName)
     .replaceAll("{{VERIFY_URL}}", verifyUrl)
     .replaceAll("{{APP_NAME}}", appName);
+}
+
+function renderForgotPasswordEmailHtml(params: {
+  firstName: string;
+  reset_link: string;
+  app_name: string;
+}) {
+  const { firstName, reset_link, app_name } = params;
+  return forgotPasswordTemplate
+    .replaceAll("{{name}}", firstName)
+    .replaceAll("{{reset_link}}", reset_link)
+    .replaceAll("{{app_name}}", app_name)
+    .replaceAll("{{expiry_hours}}", "15m")
+    .replaceAll("{{support_email}}", MAIL_USER || "<support_email>")
+    .replaceAll("{{current_year}}", `${new Date().getFullYear()}`);
 }
 
 export async function sendMail(opts: {
@@ -77,9 +93,11 @@ export async function sendMail(opts: {
 
   // store hashed token + userId + expiresAt in your DB
   const hashed = crypto.createHash("sha256").update(rawToken).digest("hex");
-  const EMAIL_TOKEN_EXPIRY_MS = 5 * 60 * 1000;
+  const EMAIL_TOKEN_EXPIRY_MS = 15 * 60 * 1000;
 
   const expiresAt = new Date(Date.now() + EMAIL_TOKEN_EXPIRY_MS);
+
+  await EmailVerification.deleteMany({ userId });
 
   await EmailVerification.create({
     userId,
@@ -94,10 +112,12 @@ export async function sendMail(opts: {
     );
   }
 
+  if (!process.env.MAIL_PASS) throw new Error("MAIL_PASS is missing!");
+
   const transportPayload: TransportOptions = {
     host: MAIL_HOST,
     port: Number(MAIL_PORT),
-    secure: true,
+    secure: Number(MAIL_PORT) === 465,
     auth: {
       user: MAIL_USER,
       pass: process.env.MAIL_PASS!,
@@ -115,6 +135,22 @@ Please verify your email: ${verifyUrl}
 If you didn’t request this, ignore this message.
 — ${appName}`;
 
+  const forgotPassText = `Subject: AuthSystemApi password reset — link expires in 15 minutes
+
+Hi ${firstName},
+
+We received a request to reset the password for your AuthSystemApi account. Use the link below to set a new password. This link expires in 15 minutes.
+
+Reset password: ${verifyUrl}
+
+If you didn't request this change, you can ignore this email or contact us at ${
+    MAIL_USER || "<support_email>"
+  }.
+
+Important: Never share your password or the reset link with anyone.
+
+— The AuthSystemApi team
+`;
   const html = renderVerifyEmailHtml({
     firstName,
     verifyUrl,
@@ -136,11 +172,19 @@ If you didn’t request this, ignore this message.
   try {
     // Send email
     const info = await transporter.sendMail({
-      from: `"${appName}" <noreply@yourdomain.dev>`,
+      from: `"${appName}" noreply@authsystemapi.dev`,
       to,
-      subject: "Verify your email",
-      text, // plaintext for clients that block HTML
-      html,
+      subject: baseUrl.includes("reset-password")
+        ? "Reset your password"
+        : "Verify your email",
+      text: baseUrl.includes("reset-password") ? forgotPassText : text, // plaintext for clients that block HTML
+      html: baseUrl.includes("reset-password")
+        ? renderForgotPasswordEmailHtml({
+            firstName,
+            reset_link: verifyUrl,
+            app_name: appName || "AuthSystemApi",
+          })
+        : html,
     });
 
     return {
@@ -190,7 +234,7 @@ export const signUp = async (
       to: email,
       firstName: firstname,
       appName: "AuthSystemApi",
-      baseUrl: BASE_URL!,
+      baseUrl: VERIFY_EMAIL_URL!,
       userId: `${newUser._id}`,
     };
 
@@ -199,10 +243,10 @@ export const signUp = async (
     try {
       const emailResult = await sendMail(passToSendMail);
       if (!emailResult.success) {
-        console.error(
-          "❌ Failed to send verification email:",
-          emailResult.error
-        );
+        return res.status(500).json({
+          success: false,
+          message: `❌ Failed to send verification email: ${emailResult.error}`,
+        });
         // Decide: fail signup or continue with warning
       }
 
@@ -210,7 +254,7 @@ export const signUp = async (
 
       token = rawToken;
     } catch (error) {
-      return console.error("❌ Error sending email:", error);
+      return next(error);
     }
 
     const safeUser = {
@@ -224,12 +268,13 @@ export const signUp = async (
       success: true,
       message: "User signed up successfully",
       data: safeUser,
-      token,
+      token: NODE_ENV === "development" ? token : "************",
     });
   } catch (error) {
     next(error);
   }
 };
+
 export const logIn = async (
   req: Request<{}, {}, LoginInfo>,
   res: Response,
@@ -249,6 +294,11 @@ export const logIn = async (
         .status(404)
         .json({ success: false, message: "User not found!" });
 
+    if (!user.isEmailVerified)
+      return res
+        .status(403)
+        .json({ success: false, message: "Your Email is not verified!" });
+
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid)
       return res
@@ -256,20 +306,140 @@ export const logIn = async (
         .json({ success: false, message: "Incorrect Password!" });
 
     if (!JWT_SECRET) {
-      console.error("❌ JWT_SECRET is not defined");
-      return res.status(500).json({
-        success: false,
-        message: "Internal server error",
-      });
+      try {
+        return res.status(500).json({
+          success: false,
+          message: "Internal server error",
+        });
+      } catch (error) {
+        next(error);
+      }
     }
-    const token = jwt.sign({ userId: user.id } as JwtPayload, JWT_SECRET, {
-      expiresIn: "7d",
-    });
+
+    const token = jwt.sign(
+      { userId: user.id } as JwtPayload,
+      JWT_SECRET as Secret,
+      {
+        expiresIn: "7d",
+      }
+    );
 
     return res.status(200).json({
       success: true,
       message: "Logged in successfully",
       token,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const forgotPassword = async (
+  req: Request<{}, {}, { email: string }>,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required!" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found!" });
+    }
+
+    const emailResult = await sendMail({
+      to: email,
+      firstName: user.firstname,
+      appName: "AuthSystemApi",
+      baseUrl: FORGOT_PASSWORD_URL!,
+      userId: `${user._id}`,
+    });
+
+    if (!emailResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send password reset email",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset email sent successfully",
+      // only in dev mode
+      rawToken: emailResult.rawToken,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resetPassword = async (
+  req: Request<
+    {},
+    {},
+    { newPassword: string },
+    { token: string; userId: string }
+  >,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { newPassword } = req.body;
+    const { token, userId } = req.query;
+
+    if (!newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "New password is required!",
+      });
+    }
+
+    if (!token || !userId)
+      return res.status(400).json({
+        success: false,
+        message: "Token and userId are required",
+      });
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found!" });
+    }
+
+    const hashed = crypto.createHash("sha256").update(token).digest("hex");
+
+    const verifyToken = await EmailVerification.findOne({ tokenHash: hashed });
+
+    if (!verifyToken || verifyToken.expiresAt < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "This token is expired or invalid.",
+      });
+    }
+
+    await EmailVerification.deleteMany({ userId });
+
+    const hashedNewPassword = await bcrypt.hash(newPassword, 12);
+
+    await User.findOneAndUpdate(
+      { _id: userId },
+      { password: hashedNewPassword }
+    );
+
+    res.status(200).json({
+      success: true,
+      message:
+        "Password reset successful. You can now log in with your new password.",
     });
   } catch (error) {
     next(error);
