@@ -344,7 +344,7 @@ This project is licensed under the ISC License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Documentation**: [API Documentation](docs/api.md)
+- **Documentation**: [API Documentation](https://elements.getpostman.com/redirect?entityId=41487666-c666d6a6-054c-4b23-aebe-6cfaf3dbd705&entityType=collection)
 - **Issues**: [GitHub Issues](https://github.com/yourusername/AuthSystemAPI/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yourusername/AuthSystemAPI/discussions)
 - **Email**: [support@authsystemapi.dev](mailto:tabukeezekiel9@gmail.com)
