@@ -14,5 +14,5 @@ authRouter.post("/signUp", signUp);
 authRouter.post("/login", arcjetMiddleware, logIn);
 authRouter.post("/forgot-password", forgotPassword);
 authRouter.post("/reset-password", resetPassword);
-authRouter.post("/refresh-token", refreshToken);
+authRouter.post("/refresh-token", arcjetMiddleware, refreshToken);
 export default authRouter;

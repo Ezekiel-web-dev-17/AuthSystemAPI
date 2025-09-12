@@ -1,11 +1,12 @@
 import mongoose, { Document, model, Schema } from "mongoose";
 
-interface UserModel extends Document {
+export interface UserModel extends Document {
   firstname: string;
   lastname: string;
   email: string;
   password: string;
   isEmailVerified: boolean; // new field to track email verification status
+  isAdmin: boolean;
 }
 
 const userModel = new Schema<UserModel>(
@@ -38,6 +39,10 @@ const userModel = new Schema<UserModel>(
       minLength: 6,
     },
     isEmailVerified: { type: Boolean, default: false },
+    isAdmin: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

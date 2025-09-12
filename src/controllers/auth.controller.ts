@@ -1,18 +1,20 @@
 import { NextFunction, Request, Response } from "express";
 import { User } from "../models/user.model.js";
 import bcrypt from "bcryptjs";
-import jwt, { Secret } from "jsonwebtoken";
+import jwt, { Secret, SignOptions } from "jsonwebtoken";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import {
+  BASE_URL,
   FORGOT_PASSWORD_URL,
+  JWT_EXPIRES_IN,
+  JWT_REFRESH_EXPIRES_IN,
   JWT_REFRESH_SECRET,
   JWT_SECRET,
   MAIL_HOST,
   MAIL_PORT,
   MAIL_USER,
   NODE_ENV,
-  VERIFY_EMAIL_URL,
 } from "../config/app.config.js";
 import { emailTemplate } from "../helper/emailTemplate.js";
 import { EmailVerification } from "../models/verified.model.js";
@@ -30,10 +32,6 @@ interface LoginInfo {
   password: string;
 }
 
-interface JwtPayload {
-  userId: string;
-}
-
 interface TransportOptions {
   host: string;
   port: number;
@@ -44,12 +42,12 @@ interface TransportOptions {
   };
 }
 
+const EMAIL_HTML_TEMPLATE = emailTemplate;
+
 // build a user-specific verify URL (example)
 function buildVerifyUrl(baseUrl: string, token: string, userId: string) {
   return `${baseUrl}?token=${encodeURIComponent(token)}&userId=${userId}`;
 }
-
-const EMAIL_HTML_TEMPLATE = emailTemplate;
 
 // tiny helper to fill placeholders
 function renderVerifyEmailHtml(params: {
@@ -76,6 +74,10 @@ function renderForgotPasswordEmailHtml(params: {
     .replaceAll("{{expiry_hours}}", "15m")
     .replaceAll("{{support_email}}", MAIL_USER || "<support_email>")
     .replaceAll("{{current_year}}", `${new Date().getFullYear()}`);
+}
+
+function jwtExpires(token: string, timeToLive: string) {
+  return (token || timeToLive) as SignOptions["expiresIn"];
 }
 
 export async function sendMail(opts: {
@@ -234,7 +236,7 @@ export const signUp = async (
       to: email,
       firstName: firstname,
       appName: "AuthSystemApi",
-      baseUrl: VERIFY_EMAIL_URL!,
+      baseUrl: BASE_URL!.concat("verify-email"),
       userId: `${newUser._id}`,
     };
 
@@ -289,6 +291,7 @@ export const logIn = async (
         .json({ success: false, message: "All fields are required!" });
 
     const user = await User.findOne({ email });
+
     if (!user)
       return res
         .status(404)
@@ -300,6 +303,7 @@ export const logIn = async (
         .json({ success: false, message: "Your Email is not verified!" });
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
+
     if (!isPasswordValid)
       return res
         .status(401)
@@ -316,14 +320,14 @@ export const logIn = async (
       }
     }
 
-    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET as Secret, {
-      expiresIn: "15m",
+    const accessToken = jwt.sign({ userId: user._id }, JWT_SECRET as Secret, {
+      expiresIn: jwtExpires(JWT_EXPIRES_IN!, "2m"),
     });
 
     const refreshToken = jwt.sign(
-      { userId: user.id },
+      { userId: user._id },
       JWT_REFRESH_SECRET as Secret,
-      { expiresIn: "5d" }
+      { expiresIn: jwtExpires(JWT_REFRESH_EXPIRES_IN!, "1m") }
     );
 
     return res.status(200).json({
@@ -450,8 +454,7 @@ export const resetPassword = async (
 };
 export const refreshToken = async (
   req: Request<{}, {}, { token: string }>,
-  res: Response,
-  next: NextFunction
+  res: Response
 ) => {
   try {
     const { token } = req.body;
@@ -496,28 +499,19 @@ export const refreshToken = async (
         .json({ success: false, message: "User email not verified!" });
     }
 
-    // ✅ Issue new access token
-    const accessToken = jwt.sign(
-      { userId: user.id },
-      JWT_SECRET as Secret,
-      { expiresIn: "15m" } // short lifespan for access token
-    );
-
-    // (Optional) Issue a new refresh token too:
-    const newRefreshToken = jwt.sign(
-      { userId: user.id },
-      JWT_REFRESH_SECRET as Secret,
-      { expiresIn: "7d" }
-    );
+    const newAccessToken = jwt.sign({ userId: user.id }, JWT_SECRET as Secret, {
+      expiresIn: jwtExpires(JWT_EXPIRES_IN!, "1m"),
+    });
 
     return res.status(200).json({
       success: true,
-      accessToken,
-      refreshToken: newRefreshToken, // if rotating tokens
+      accessToken: newAccessToken,
+      refreshToken: token,
     });
   } catch (error) {
-    return res
-      .status(401)
-      .json({ success: false, message: "Invalid or expired refresh token." });
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired refresh token. Please login again.",
+    });
   }
 };

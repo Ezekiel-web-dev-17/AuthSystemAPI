@@ -6,7 +6,6 @@ export const {
   PORT,
   NODE_ENV,
   BASE_URL,
-  VERIFY_EMAIL_URL,
   FORGOT_PASSWORD_URL,
   MONGO_URI,
   JWT_SECRET,
