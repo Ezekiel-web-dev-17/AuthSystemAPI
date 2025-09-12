@@ -57,7 +57,7 @@ export const authorize = async (
       }
 
       req.user = user;
-      next();
+      return next();
     } catch (jwtError: any) {
       if (jwtError.name === "TokenExpiredError") {
         return res.status(401).json({
